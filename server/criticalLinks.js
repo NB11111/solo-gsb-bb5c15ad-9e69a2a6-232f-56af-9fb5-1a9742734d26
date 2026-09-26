@@ -29,7 +29,7 @@
  * }
  */
 
-const { pairKeyOf } = require('./familyGraph');
+const { pairKeyOf, createIndex } = require('./familyGraph');
 
 /** 姓名（中文排序）、成员 ID 的稳定排序比较器 */
 function compareIdsByNameThenId(nameOf) {
@@ -54,7 +54,8 @@ function findCriticalLinks(state) {
   // 每对成员之间至多一条关系（反向即祖先环路，录入与加载时均已被拦截），
   // 因此无向化后不存在平行边，按边跳过 DFS 来路即可。
   const edges = [];
-  const parentsOf = (state && state.parentsOf) || {};
+  // 无原型索引：成员 ID 与 "__proto__"、"constructor" 等同名时枚举仍安全
+  const parentsOf = (state && state.parentsOf) || createIndex();
   for (const [childId, parents] of Object.entries(parentsOf)) {
     if (!nameOf.has(childId) || !Array.isArray(parents)) continue;
     for (const p of parents) {

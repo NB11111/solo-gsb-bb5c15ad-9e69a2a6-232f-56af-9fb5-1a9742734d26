@@ -46,6 +46,8 @@ const BAND_PAD = 12; // 分量背景带相对节点区域的内边距
 const MARGIN = 24; // 画布四周留白
 const HEADER_H = 40; // 画布顶部版本标注区高度
 
+const { createIndex } = require('./familyGraph');
+
 /** 文本估计宽度：全角字符按 CHAR_W_WIDE、其余按 CHAR_W_NARROW 累加 */
 function measureName(name) {
   let w = 0;
@@ -82,7 +84,8 @@ function layoutFamilyChart(state, version = 0) {
 
   // 边表：仅保留两端都在成员表中的关系（防御性过滤；正常状态必然如此）
   const edges = [];
-  const parentsOf = (state && state.parentsOf) || {};
+  // 无原型索引：成员 ID 与 "__proto__"、"constructor" 等同名时枚举仍安全
+  const parentsOf = (state && state.parentsOf) || createIndex();
   for (const [childId, parents] of Object.entries(parentsOf)) {
     if (!nameOf.has(childId) || !Array.isArray(parents)) continue;
     for (const p of parents) {

@@ -27,6 +27,7 @@ const path = require('path');
 const crypto = require('crypto');
 const {
   createState,
+  createIndex,
   validateEdge,
   validateEdgeBatch,
   validateBackup,
@@ -266,6 +267,8 @@ function createStore(filePath) {
   }
 
   function deleteEdge(parentId, childId) {
+    // parentsOf 为无原型索引：childId 恰为 "constructor" 等原型属性名时，
+    // 直接读取只会得到 undefined，不能误读原型上的构造器/方法。
     const parents = state.parentsOf[childId];
     if (!parents || !parents.includes(parentId)) {
       return { error: '关系不存在' };
