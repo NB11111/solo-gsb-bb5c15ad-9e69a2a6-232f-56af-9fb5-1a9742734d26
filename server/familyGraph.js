@@ -6,6 +6,10 @@
  * 关系模型：每条边 parent -> child（父母 → 子女）。
  * parentsOf[child] = [parentA, parentB]，每名子女至多两位父母。
  * 每个连通结构必须是有向无环图（DAG），即沿父母链向上永远不会回到自身。
+ *
+ * parentsOf 等「以成员 ID 为键」的索引一律是 null 原型对象（createIdIndex）：
+ * 成员 ID 允许是 "__proto__"、"constructor"、"toString" 等与
+ * Object.prototype 成员同名的任意非空字符串，普通对象字面量无法安全承载。
  */
 
 const MAX_PARENTS_PER_CHILD = 2;
@@ -16,12 +20,28 @@ const MAX_DESCENDANT_GENERATIONS = 10;
 
 const { ANNIVERSARY_TYPES, TYPE_LABEL, validateMonthDay } = require('./anniversaries');
 
+/**
+ * 创建「以成员 ID 为键」的空索引（null 原型对象）。
+ *
+ * 成员 ID 允许是任意非空字符串——包括 "__proto__"、"constructor"、"toString"
+ * 等与 Object.prototype 成员同名的值。普通对象字面量 {} 以这些 ID 为键时：
+ *   - 读：键不存在会沿原型链取到继承值（如 constructor、toString 函数），
+ *     被误当作「已存在的父母列表」继续展开或 push，直接抛异常；
+ *   - 写："__proto__" 会改写对象原型而不是新增条目，该成员的关系对
+ *     Object.entries 不可见，遍历与落盘都会静默丢失。
+ * null 原型对象没有任何继承属性，任意合法 ID 都能安全读写。
+ * 所有以成员 ID 为键的索引（parentsOf、childrenOf 等）统一用本函数创建。
+ */
+function createIdIndex() {
+  return Object.create(null);
+}
+
 /** 创建一个空的家谱状态对象 */
 function createState(maxMembers = MAX_MEMBERS) {
   return {
     maxMembers,
     members: [], // [{ id, name, birthday, deathday }]（纪念日为 { month, day } 或 null）
-    parentsOf: {}, // memberId -> [parentId, ...]
+    parentsOf: createIdIndex(), // memberId -> [parentId, ...]（null 原型，任意合法 ID 安全读写）
   };
 }
 
@@ -235,12 +255,13 @@ function validateEdgeBatch(state, rawEdges) {
 
   // 祖先环路：在合并后的图上，对每条候选边检查 parent 是否沿父母链向上可达 child。
   // 可达性基于最终合并图（而非逐条累加），故结论与草稿顺序无关。
-  const mergedState = {
-    ...state,
-    parentsOf: Object.fromEntries(
-      [...merged.entries()].map(([childId, parents]) => [childId, [...parents]]),
-    ),
-  };
+  // 合并图的父母邻接表用 null 原型索引：成员 ID 与 Object.prototype 成员同名时
+  // （如 constructor）读取不会取到继承值。
+  const mergedParentsOf = createIdIndex();
+  for (const [childId, parents] of merged) {
+    mergedParentsOf[childId] = [...parents];
+  }
+  const mergedState = { ...state, parentsOf: mergedParentsOf };
   for (const item of items) {
     if (!item.structurallyValid) continue;
     if (groups.get(keyOf(item.parentId, item.childId)).length > 1) continue;
@@ -349,12 +370,13 @@ function previewMergeMembers(state, keepId, mergeId) {
   }
 
   // 冲突二：祖先环路（自指边已剔除，from===to 的平凡情况不会出现）
-  const mergedState = {
-    ...state,
-    parentsOf: Object.fromEntries(
-      [...parentsByChild.entries()].map(([childId, parentIds]) => [childId, [...parentIds]]),
-    ),
-  };
+  // 合并图的父母邻接表用 null 原型索引：成员 ID 与 Object.prototype 成员同名时
+  // （如 constructor）读取不会取到继承值。
+  const mergedParentsOf = createIdIndex();
+  for (const [childId, parentIds] of parentsByChild) {
+    mergedParentsOf[childId] = [...parentIds];
+  }
+  const mergedState = { ...state, parentsOf: mergedParentsOf };
   for (const e of edges) {
     if (isReachableUp(mergedState, e.parentId, e.childId)) {
       conflicts.push({ type: 'cycle', parentId: e.parentId, childId: e.childId });
@@ -513,7 +535,8 @@ function descendantBranches(state, rootId, maxGen) {
   }
 
   // 子女邻接表：childrenOf[parent] = [child, ...]（沿父母→子女向下）
-  const childrenOf = {};
+  // null 原型索引：成员 ID 与 Object.prototype 成员同名时也能安全读写
+  const childrenOf = createIdIndex();
   for (const [childId, parents] of Object.entries(state.parentsOf || {})) {
     for (const parentId of parents) (childrenOf[parentId] ||= []).push(childId);
   }
@@ -611,7 +634,8 @@ function ancestorProfiles(state, descendantId) {
   if (minGenOf.size <= 1) return profiles; // 该成员没有任何祖先
 
   // 子女邻接表：childrenOf[parent] = [child, ...]（沿父母→子女向下）
-  const childrenOf = {};
+  // null 原型索引：成员 ID 与 Object.prototype 成员同名时也能安全读写
+  const childrenOf = createIdIndex();
   for (const childId of Object.keys(state.parentsOf || {})) {
     for (const parentId of state.parentsOf[childId] || []) {
       (childrenOf[parentId] ||= []).push(childId);
@@ -765,7 +789,8 @@ function previewEdgeImpact(state, change) {
   if (!parentId || !childId) return { error: '请选择父母与子女' };
 
   // 构造假设图：深拷贝父母邻接表后应用变更，当前家谱保持不变
-  const parentsOf = {};
+  // （null 原型索引：成员 ID 与 Object.prototype 成员同名时也能安全读写）
+  const parentsOf = createIdIndex();
   for (const [cid, parents] of Object.entries(state.parentsOf || {})) {
     parentsOf[cid] = [...parents];
   }
@@ -904,8 +929,9 @@ function previewMemberDeletion(state, rawMemberId) {
   if (!memberId || !hasMember(state, memberId)) return { error: '成员不存在' };
 
   // 构造删除后的只读假设图（深拷贝父母邻接表），当前家谱保持不变
+  // （null 原型索引：成员 ID 与 Object.prototype 成员同名时也能安全读写）
   const remainingMembers = state.members.filter((m) => m.id !== memberId);
-  const parentsOf = {};
+  const parentsOf = createIdIndex();
   let removedEdgeCount = 0;
   for (const [childId, parents] of Object.entries(state.parentsOf || {})) {
     if (childId === memberId) {
@@ -1170,7 +1196,10 @@ function validateBackup(raw, maxMembers = MAX_MEMBERS) {
   }
 
   // ---- 祖先环路：在去重后的整张图上对每条边做可达性判定，成环的每条边都报错 ----
-  const cycleState = { maxMembers, members, parentsOf: {} };
+  // 父母邻接表用 null 原型索引：成员 ID 允许是 "__proto__"、"constructor"、
+  // "toString" 等与 Object.prototype 成员同名的合法值，普通对象字面量会以
+  // 继承值冒充父母列表（push 抛异常）或把 "__proto__" 写成对象原型（丢边）。
+  const cycleState = { maxMembers, members, parentsOf: createIdIndex() };
   for (const e of deduped) {
     (cycleState.parentsOf[e.childId] ||= []).push(e.parentId);
   }
@@ -1193,6 +1222,7 @@ module.exports = {
   MAX_BATCH_EDGES,
   MAX_BACKUP_NAME_LENGTH,
   MAX_DESCENDANT_GENERATIONS,
+  createIdIndex,
   createState,
   getMember,
   pairKeyOf,
